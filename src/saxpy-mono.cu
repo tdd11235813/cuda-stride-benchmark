@@ -10,15 +10,15 @@
 
 template<typename T>
 __global__
-void kernel_saxpy(T *x, T *y, int n, T a) {
+void kernel_saxpy(T *x, T *y, unsigned int n, T a) {
 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
   if(i<n)
     y[i] = a * x[i] + y[i];
 }
 
 
-template<typename T, int TRuns, int TBlocksize>
+template<typename T, unsigned int TRuns, unsigned int TBlocksize>
 void saxpy(size_t n, int dev) {
 
   CHECK_CUDA( cudaSetDevice(dev) );
@@ -41,7 +41,7 @@ void saxpy(size_t n, int dev) {
   T* y;
   CHECK_CUDA( cudaMalloc(&x, n*sizeof(T)) );
   CHECK_CUDA( cudaMalloc(&y, n*sizeof(T)) );
-  for (int i = 0; i < n; i++) {
+  for (unsigned int i = 0; i < n; i++) {
     h_x[i] = static_cast<T>(1);
     h_y[i] = static_cast<T>(2);
   }
@@ -50,7 +50,7 @@ void saxpy(size_t n, int dev) {
   int numSMs;
   cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, dev);
 
-  int blocks_n = (n-1)/TBlocksize+1;
+  unsigned int blocks_n = (n-1)/TBlocksize+1;
 
   std::cout << " "
             << std::setw(3) << 0
@@ -72,7 +72,7 @@ void saxpy(size_t n, int dev) {
   float min_ms = std::numeric_limits<float>::max();
 
   // -- REPETITIONS --
-  for(int r=0; r<TRuns; ++r) {
+  for(unsigned int r=0; r<TRuns; ++r) {
     CHECK_CUDA( cudaMemcpy( y, h_y, n*sizeof(T), cudaMemcpyHostToDevice) );
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_CUDA( cudaEventRecord(cstart, cstream));
@@ -89,7 +89,7 @@ void saxpy(size_t n, int dev) {
 
   CHECK_CUDA( cudaMemcpy( h_z, y, n*sizeof(T), cudaMemcpyDeviceToHost) );
   // check result
-  for(int k=0; k<n; ++k) {
+  for(unsigned int k=0; k<n; ++k) {
     if( h_z[k] != 1*a+2 ) {
       std::cerr << "\n\n y[" << k << "] = " << h_z[k] << "\n";
       throw std::runtime_error("RESULT MISMATCH");
@@ -113,8 +113,8 @@ void saxpy(size_t n, int dev) {
 int main(int argc, const char** argv)
 {
 
-  static constexpr int REPETITIONS = 3;
-  using DATA_TYPE = int;
+  static constexpr unsigned int REPETITIONS = 5;
+  using DATA_TYPE = unsigned;
 
   const int dev=0;
   unsigned int n1 = 0;

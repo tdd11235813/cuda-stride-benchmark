@@ -8,31 +8,30 @@
 #include <stdexcept>
 #include <limits>
 
-template<int TBlocksize, typename T>
-__device__
-T reduce(int tid, T *x, int n) {
-
+template<unsigned int TBlocksize, unsigned int TMaxWarpNum, typename T>
+__global__
+void kernel_reduce(T* x, T* y, unsigned int n)
+{
   __shared__ T sdata[TBlocksize];
 
-  int i = blockIdx.x * TBlocksize + tid;
+  unsigned int i = blockIdx.x * TBlocksize + threadIdx.x;
 
-  sdata[tid] = 0;
+  if(i>=n)
+    return;
 
   // --------
-  // Level 1: grid reduce, reading from global memory
+  // Level 1: reduce only one pair
   // --------
 
-  // reduce per thread with increased ILP by 4x unrolling sum.
-  // the thread of our block reduces its 4 grid-neighbored threads and advances by grid-striding loop
-  while (i+3*gridDim.x*TBlocksize < n) {
-    sdata[tid] += x[i] + x[i+gridDim.x*TBlocksize] + x[i+2*gridDim.x*TBlocksize] + x[i+3*gridDim.x*TBlocksize];
-    i += 4*gridDim.x*TBlocksize;
+  T tsum = x[i]; // avoids using the neutral element of specific reduction operation
+
+  const unsigned int grid_size = gridDim.x*TBlocksize;
+  i += grid_size;
+  if(i<n) {
+    tsum += x[i];
   }
-  // doing the remaining blocks
-  while(i<n) {
-    sdata[tid] += x[i];
-    i += gridDim.x * TBlocksize;
-  }
+
+  sdata[threadIdx.x] = tsum;
 
   __syncthreads();
 
@@ -41,46 +40,42 @@ T reduce(int tid, T *x, int n) {
   // --------
 
 #pragma unroll
-  for(int bs=TBlocksize, bsup=(TBlocksize+1)/2;
+  for(unsigned int bs=TBlocksize,
+        bsup=(TBlocksize+1)/2; // ceil(TBlocksize/2.0)
       bs>1;
-      bs=bs/2, bsup=(bs+1)/2) {
-    if(tid < bsup && tid+bsup<TBlocksize) {
-      sdata[tid] += sdata[tid + bsup];
+      bs=bs/2,
+        bsup=(bs+1)/2) // ceil(bs/2.0)
+  {
+    bool cond = threadIdx.x < bsup // only first half of block is working
+               && (threadIdx.x+bsup) < TBlocksize // index for second half must be in bounds
+               && (blockIdx.x*TBlocksize+threadIdx.x+bsup)<n; // if elem in second half has been initialized before
+    if(cond)
+    {
+      sdata[threadIdx.x] += sdata[threadIdx.x + bsup];
     }
     __syncthreads();
   }
 
-  return sdata[0];
-}
-
-template<int TBlocksize, int TMaxWarpNum, typename T>
-__global__
-void kernel_reduce(T* x, T* y, int n)
-{
-  T block_result = reduce<TBlocksize>(threadIdx.x, x, n);
-
-  unsigned warpid,smid;
-  asm("mov.u32 %0, %%smid;":"=r"(smid));//get SM id
-  asm("mov.u32 %0, %%warpid;":"=r"(warpid));//get warp id within SM
 
   // store block result to gmem
-  if (threadIdx.x == 0)
-    y[smid * TMaxWarpNum + warpid] += block_result;
+  if (threadIdx.x == 0) {
+    T block_result = sdata[0];
+    if(TMaxWarpNum>0) {
+      unsigned warpid,smid;
+      asm("mov.u32 %0, %%smid;":"=r"(smid));//get SM id
+      asm("mov.u32 %0, %%warpid;":"=r"(warpid));//get warp id within SM
+
+      y[smid * TMaxWarpNum + warpid] += block_result;
+    }else{
+      atomicAdd(y, block_result);
+    }
+  }
 }
 
-template<int TBlocksize, typename T>
-__global__
-void kernel_reduce_2(T* x, T* y, int n)
-{
-  T block_result = reduce<TBlocksize>(threadIdx.x, x, n);
+template<typename T, unsigned int TRuns, unsigned int TBlocksize, unsigned int TMaxWarpNum>
+void reduce(size_t n, unsigned int dev) {
 
-  // store block result to gmem
-  if (threadIdx.x == 0)
-    atomicAdd(y, block_result);
-}
-
-template<typename T, int TRuns, int TBlocksize, int TMaxWarpNum>
-void reduce(size_t n, int dev) {
+  static_assert(TMaxWarpNum>0, "TMaxWarpNum>0");
 
   CHECK_CUDA( cudaSetDevice(dev) );
   CHECK_CUDA( cudaFree(0) ); // force context init (applies clocks before getting props)
@@ -103,13 +98,13 @@ void reduce(size_t n, int dev) {
   CHECK_CUDA( cudaMalloc(&x, n*sizeof(T)) );
   CHECK_CUDA( cudaMalloc(&y, TMaxWarpNum*numSMs*sizeof(T)) );
   CHECK_CUDA( cudaMalloc(&z, sizeof(T)) );
-  for (int i = 0; i < n; i++) {
+  for (unsigned int i = 0; i < n; i++) {
     h_x[i] = static_cast<T>(1);
   }
   CHECK_CUDA( cudaMemcpy( x, h_x, n*sizeof(T), cudaMemcpyHostToDevice) );
 
 
-  dim3 blocks = (n-1)/TBlocksize+1;
+  dim3 blocks = ( ((n+1)/2)-1)/TBlocksize+1; // ceil(ceil(n/2.0)/TBlocksize)
   dim3 blocks_2 = (TMaxWarpNum*numSMs-1)/TBlocksize+1;
 
   std::cout << " "
@@ -132,14 +127,15 @@ void reduce(size_t n, int dev) {
   float min_ms = std::numeric_limits<float>::max();
 
   // -- REPETITIONS --
-  for(int r=0; r<TRuns; ++r) {
+  for(unsigned int r=0; r<TRuns; ++r) {
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_CUDA(cudaEventRecord(cstart, cstream));
+    // ok, here we do need neutral element of specific reduce operation
     CHECK_CUDA(cudaMemset(y, 0, TMaxWarpNum*numSMs*sizeof(T)));
     CHECK_CUDA(cudaMemset(z, 0, sizeof(T)));
 
     kernel_reduce<TBlocksize, TMaxWarpNum><<<blocks, TBlocksize, 0, cstream>>>(x, y, n);
-    kernel_reduce_2<TBlocksize><<<blocks_2, TBlocksize, 0, cstream>>>(y, z, TMaxWarpNum*numSMs);
+    kernel_reduce<TBlocksize, 0><<<blocks_2, TBlocksize, 0, cstream>>>(y, z, TMaxWarpNum*numSMs);
 
     CHECK_CUDA( cudaEventRecord(cend, cstream) );
     CHECK_CUDA( cudaEventSynchronize(cend) );
@@ -173,9 +169,9 @@ void reduce(size_t n, int dev) {
 int main(int argc, const char** argv)
 {
 
-  static constexpr int REPETITIONS = 3;
-  static constexpr int MAX_WARPS_PER_SM = 64;
-  using DATA_TYPE = int;
+  static constexpr unsigned int REPETITIONS = 5;
+  static constexpr unsigned int MAX_WARPS_PER_SM = 64; // hardware specific
+  using DATA_TYPE = unsigned;
 
   const int dev=0;
   unsigned int n1 = 0;
@@ -191,12 +187,18 @@ int main(int argc, const char** argv)
 
   print_header("reduction-mono",n1,n2);
 
-  for(unsigned n=n1; n<=n2; n<<=1) {
-    reduce<DATA_TYPE, REPETITIONS, 64, MAX_WARPS_PER_SM>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 128, MAX_WARPS_PER_SM>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 256, MAX_WARPS_PER_SM>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 512, MAX_WARPS_PER_SM>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 1024, MAX_WARPS_PER_SM>(n, dev);
+  try{
+    for(unsigned n=n1; n<=n2; n<<=1) {
+      reduce<DATA_TYPE, REPETITIONS, 64, MAX_WARPS_PER_SM>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 128, MAX_WARPS_PER_SM>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 256, MAX_WARPS_PER_SM>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 512, MAX_WARPS_PER_SM>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 1024, MAX_WARPS_PER_SM>(n, dev);
+    }
+  }catch(std::runtime_error e){
+    std::cerr << e.what() << "\n";
+    CHECK_CUDA( cudaDeviceReset() );
+    return 1;
   }
 
   CHECK_CUDA( cudaDeviceReset() );

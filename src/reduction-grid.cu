@@ -8,15 +8,21 @@
 #include <stdexcept>
 #include <limits>
 
-template<int TBlocksize, typename T>
-__device__
-T reduce(int tid, T *x, int n) {
-
+template<unsigned int TBlocksize, typename T>
+__global__
+void kernel_reduce(T* x, T* y, unsigned int n)
+{
   __shared__ T sdata[TBlocksize];
 
-  int i = blockIdx.x * TBlocksize + tid;
+  unsigned int i = blockIdx.x * TBlocksize + threadIdx.x;
 
-  sdata[tid] = 0;
+  if(i>=n)
+    return;
+
+  T tsum = x[i]; // avoids using the neutral element of specific reduction operation
+
+  const unsigned int grid_size = gridDim.x*TBlocksize;
+  i += grid_size;
 
   // --------
   // Level 1: grid reduce, reading from global memory
@@ -24,15 +30,18 @@ T reduce(int tid, T *x, int n) {
 
   // reduce per thread with increased ILP by 4x unrolling sum.
   // the thread of our block reduces its 4 grid-neighbored threads and advances by grid-striding loop
-  while (i+3*gridDim.x*TBlocksize < n) {
-    sdata[tid] += x[i] + x[i+gridDim.x*TBlocksize] + x[i+2*gridDim.x*TBlocksize] + x[i+3*gridDim.x*TBlocksize];
-    i += 4*gridDim.x*TBlocksize;
+  // (maybe 128bit load improve perf)
+  while (i+3*grid_size < n) {
+    tsum += x[i] + x[i+grid_size] + x[i+2*grid_size] + x[i+3*grid_size];
+    i += 4*grid_size;
   }
   // doing the remaining blocks
   while(i<n) {
-    sdata[tid] += x[i];
-    i += gridDim.x * TBlocksize;
+    tsum += x[i];
+    i += grid_size;
   }
+
+  sdata[threadIdx.x] = tsum;
 
   __syncthreads();
 
@@ -41,30 +50,28 @@ T reduce(int tid, T *x, int n) {
   // --------
 
 #pragma unroll
-  for(int bs=TBlocksize, bsup=(TBlocksize+1)/2;
+  for(unsigned int bs=TBlocksize,
+        bsup=(TBlocksize+1)/2; // ceil(TBlocksize/2.0)
       bs>1;
-      bs=bs/2, bsup=(bs+1)/2) {
-    if(tid < bsup && tid+bsup<TBlocksize) {
-      sdata[tid] += sdata[tid + bsup];
+      bs=bs/2,
+        bsup=(bs+1)/2) // ceil(bs/2.0)
+  {
+    bool cond = threadIdx.x < bsup // only first half of block is working
+               && (threadIdx.x+bsup) < TBlocksize // index for second half must be in bounds
+               && (blockIdx.x*TBlocksize+threadIdx.x+bsup)<n; // if elem in second half has been initialized before
+    if(cond)
+    {
+      sdata[threadIdx.x] += sdata[threadIdx.x + bsup];
     }
     __syncthreads();
   }
 
-  return sdata[0];
-}
-
-template<int TBlocksize, typename T>
-__global__
-void kernel_reduce(T* x, T* y, int n)
-{
-  T block_result = reduce<TBlocksize>(threadIdx.x, x, n);
-
   // store block result to gmem
   if (threadIdx.x == 0)
-    y[blockIdx.x] = block_result;
+    y[blockIdx.x] = sdata[0];
 }
 
-template<typename T, int TRuns, int TBlocksize>
+template<typename T, unsigned int TRuns, unsigned int TBlocksize>
 void reduce(size_t n, int dev) {
 
   CHECK_CUDA( cudaSetDevice(dev) );
@@ -83,7 +90,7 @@ void reduce(size_t n, int dev) {
   T* x;
   T* y;
   CHECK_CUDA( cudaMalloc(&x, n*sizeof(T)) );
-  for (int i = 0; i < n; i++) {
+  for (unsigned int i = 0; i < n; i++) {
     h_x[i] = static_cast<T>(1);
   }
   CHECK_CUDA( cudaMemcpy( x, h_x, n*sizeof(T), cudaMemcpyHostToDevice) );
@@ -91,12 +98,14 @@ void reduce(size_t n, int dev) {
   int numSMs;
   cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, dev);
 
-  int blocks_i = numSMs;
-  int blocks_n = (n-1)/TBlocksize+1;
-  int i=0;
+  unsigned int blocks_i = numSMs;
+  unsigned int blocks_n = ( ((n+1)/2)-1)/TBlocksize+1; // ceil(ceil(n/2.0)/TBlocksize)
+  unsigned int i=0;
   // -- GRIDSIZE LOOP --
   do{
     blocks_i <<= 1; // starting with 2*numSMs blocks per grid
+    if(blocks_i>blocks_n)
+      blocks_i = blocks_n;
     std::cout << " "
               << std::setw(3) << i++
               << ", " << dev
@@ -118,7 +127,7 @@ void reduce(size_t n, int dev) {
     float min_ms = std::numeric_limits<float>::max();
 
     // -- REPETITIONS --
-    for(int r=0; r<TRuns; ++r) {
+    for(unsigned int r=0; r<TRuns; ++r) {
       CHECK_CUDA( cudaDeviceSynchronize() );
       CHECK_CUDA(cudaEventRecord(cstart, cstream));
 
@@ -158,8 +167,8 @@ void reduce(size_t n, int dev) {
 int main(int argc, const char** argv)
 {
 
-  static constexpr int REPETITIONS = 3;
-  using DATA_TYPE = int;
+  static constexpr unsigned int REPETITIONS = 5;
+  using DATA_TYPE = unsigned;
 
   const int dev=0;
   unsigned int n1 = 0;
@@ -175,12 +184,18 @@ int main(int argc, const char** argv)
 
   print_header("reduction-grid",n1,n2);
 
-  for(unsigned n=n1; n<=n2; n<<=1) {
-    reduce<DATA_TYPE, REPETITIONS, 64>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 128>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 256>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 512>(n, dev);
-    reduce<DATA_TYPE, REPETITIONS, 1024>(n, dev);
+  try{
+    for(unsigned n=n1; n<=n2; n<<=1) {
+      reduce<DATA_TYPE, REPETITIONS, 64>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 128>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 256>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 512>(n, dev);
+      reduce<DATA_TYPE, REPETITIONS, 1024>(n, dev);
+    }
+  }catch(std::runtime_error e){
+    std::cerr << e.what() << "\n";
+    CHECK_CUDA( cudaDeviceReset() );
+    return 1;
   }
   CHECK_CUDA( cudaDeviceReset() );
   return 0;
