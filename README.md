@@ -52,7 +52,7 @@ See `supplemental/rshiny` for the R scripts.
 
 ## Online R-Shiny App
 
-[**=> Go to the online data analysis tool**!](https://www.kcod.de/gridstride/)
+[**=> Go to the online data analysis tool**!](https://www.kcod.de/cuda-stride-benchmark/)
 
 ## Local R-Shiny App
 
