@@ -4,7 +4,18 @@ library(plyr)
 library(dplyr)
 library(scales)
 
-RESULT_PATH<-"../results/"
+find_results_dir <- function () {
+    results_dir <- "results/"
+    for(z in seq(3)) {
+        if(dir.exists(results_dir))
+            return(results_dir)
+        results_dir <- paste0("../",results_dir)
+    }
+    stop("Could not find results directory.")
+}
+
+## Result directory with csv results
+RESULT_PATH <- find_results_dir()
 
 get_benchmark_flist <- function () {
     return(list.files(path=RESULT_PATH, pattern = ".csv$", recursive = TRUE))

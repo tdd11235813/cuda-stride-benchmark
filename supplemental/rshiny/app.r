@@ -87,7 +87,9 @@ server <- function(input, output, session) {
         flist <- benchmark_flist
         flist <- filter_by_tags(flist, input$tags2)
         if(is.null(flist2_selected)==TRUE || flist2_selected %in% flist == FALSE)
-            flist2_selected<<-""
+            flist2_selected<<-"" # <<- superassignment as we have a global variable here
+        if(flist2_selected==flist1_selected && length(flist)>1)
+            flist2_selected<<-flist[2]
         switch(input$sData2,
                "original" = selectInput("file2", "File", choices=flist, selected=flist2_selected),
                "User" = fileInput("file2", "File")
@@ -258,7 +260,7 @@ ui <- fluidPage(
                       )
                       )),
             column(6, wellPanel( fluidRow(
-                          column(3, selectInput("sData2", "Data 2", c("original", "User", "none"), selected="none")),
+                          column(3, selectInput("sData2", "Data 2", c("original", "User", "none"), selected="original")),
                           column(9, uiOutput("fInput2"))
                       ),
                       fluidRow(
@@ -290,7 +292,7 @@ ui <- fluidPage(
         tabPanel("Plot",
 
                  br(),
-                 plotOutput("sPlot"),
+                 plotOutput("sPlot",height=500),
                  br(),
                  wellPanel(
                      h3("Plot Options"),
