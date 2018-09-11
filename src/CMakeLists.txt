@@ -54,6 +54,7 @@ endif()
 #   SOURCES ${SOURCES}
 # )
 
+cuda_add_executable(reduction-thrust reduction-thrust.cu)
 cuda_add_executable(reduction-grid reduction-grid.cu)
 cuda_add_executable(reduction-mono reduction-mono.cu)
 cuda_add_executable(saxpy-grid saxpy-grid.cu)
