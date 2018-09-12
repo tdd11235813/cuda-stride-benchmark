@@ -24,16 +24,38 @@ get_benchmark_flist <- function () {
 open_benchmark_csv <- function (i,fnames,flabels){
     fname<-paste0(RESULT_PATH,fnames[i])
     #extracting measurements
-    local_frame <- read_csv(fname,skip=1,col_names=TRUE)
-    colnames(local_frame) <- gsub(' ','_',colnames(local_frame))
+    ## trim_ws does not trim \t, https://github.com/tidyverse/readr/issues/801
+    local_frame <- read_delim(fname,skip=1,col_names=TRUE, trim_ws = TRUE, delim=",")
     local_frame$.file_id <- i
+    colnames(local_frame) <- trimws(colnames(local_frame))
+    colnames(local_frame) <- gsub(' ','_',colnames(local_frame), fixed=TRUE)
+    colnames(local_frame) <- gsub("_(in_GB/s)",'',colnames(local_frame), fixed=TRUE)
 
-    local_frame$hardware <- local_frame$dev_name
+    local_frame <- local_frame %>%
+        mutate_all(funs(gsub("\t", "", .))) %>%
+        mutate_at(vars(-matches("(dev_name|min_time|max_throughput)")),funs(as.numeric))
+    
+    ## truth <- sapply(local_frame,is.character)
+    ## local_frame <- data.frame(cbind(sapply(local_frame[,truth],trimws,which="both"),local_frame[,!truth]))
+
+    #local_frame$n <- trimws(local_frame$n)
+    #local_frame$hardware <- trimws(local_frame$dev_name)
 
     if(nchar(flabels[i])>0)
         local_frame$hardware <- flabels[i]
     else
         local_frame$hardware <- paste0(local_frame$hardware," (Data ",i,")")
+
+    lines <- readLines(fname)
+    line_1 = lines[[1]]
+    if(grepl("reduction-cub", line_1)) {
+      vcol <- 'blocks_i/numSMs'
+      local_frame <- local_frame %>% mutate(blocks_i = 2*numSMs)
+      local_frame <- local_frame %>% mutate('blocks_i/numSMs' = 2)
+      local_frame <- local_frame %>% mutate(blocks_i = n / 128) %>% mutate('blocks_i/numSMs' = n / numSMs / 128) %>% bind_rows(local_frame)
+    }
+
+
     return(local_frame)
 }
 
@@ -124,7 +146,8 @@ get_benchmark_tables <- function(benchmark_data, args) {
         stop(paste(args$xmetric, "for x not found in available columns \n",data_colnames,"\n"))
     }
 
-
+    cat(paste(">>", dim(succeeded[args$xmetric]), "\n"), file=stderr())
+    print(succeeded, file=stderr())
     succeeded_xmetric_of_interest <- succeeded[args$xmetric]
     name_of_xmetric <- args$xmetric
     if(!is.null(xlabel)) {

@@ -3,7 +3,7 @@
 library(ggplot2)
 library(shiny)
 
-source("helper.r")
+source("helper.r", keep.source=TRUE)
 
 flist1_selected <- ""
 flist2_selected <- ""
@@ -251,7 +251,10 @@ ui <- fluidPage(
                       ),
                       fluidRow(
                           checkboxGroupInput("tags1", "Tags",
-                                             c("k80"="K80"
+                                             c(
+					       "k80"="K80",
+					       "p100"="P100",
+					       "v100"="V100"
                                                ),
                                              inline=T
                                              )),
@@ -266,7 +269,9 @@ ui <- fluidPage(
                       fluidRow(
                           checkboxGroupInput("tags2", "Tags",
                                              c(
-                                               "k80"="K80"
+                                               "k80"="K80",
+					       "p100"="P100",
+					       "v100"="V100"
                                                ),
                                              inline=T
                                              )),
