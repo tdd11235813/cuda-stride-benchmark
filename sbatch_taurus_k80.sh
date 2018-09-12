@@ -7,7 +7,7 @@
 #SBATCH --mem=12000M # gpu2
 #SBATCH --partition=gpu2
 #SBATCH --exclusive
-#SBATCH --array 1-4
+#SBATCH --array 0-4
 #SBATCH -o slurmgpu2_array-%A_%a.out
 #SBATCH -e slurmgpu2_array-%A_%a.err
 
@@ -16,7 +16,8 @@ k=$SLURM_ARRAY_TASK_ID
 
 APP_ROOT=${HOME}/cuda-workspace/cuda-stride-benchmark
 APP_BIN_DIR=${APP_ROOT}/release
-CUDA_VER=9.0.176
+#CUDA_VER=9.0.176
+CUDA_VER=9.2.88
 #CLOCK=562
 CLOCK=823
 
@@ -26,6 +27,9 @@ module load gcc/5.3.0 cuda/${CUDA_VER}
 RESULT_DIR=$APP_ROOT/results/K80/cuda-${CUDA_VER}
 mkdir -p ${RESULT_DIR}
 
+if [ $k -eq 0 ]; then
+    APP_NAME=reduction-cub
+fi
 if [ $k -eq 1 ]; then
     APP_NAME=saxpy-mono
 fi
