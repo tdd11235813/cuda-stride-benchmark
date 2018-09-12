@@ -42,6 +42,30 @@ if(NOT (CUDA_VERSION_STRING VERSION_LESS 9.0))
 #list(APPEND CUDA_NVCC_FLAGS -gencode arch=compute_70,code=compute_70)
 endif()
 
+## cub
+find_package(Git)
+if(NOT GIT_FOUND)
+  message(ERROR "Cannot find git.")
+endif()
+option( USE_GIT_PROTOCOL "If behind a firewall turn this off to use http instead." ON)
+set(git_protocol "git")
+if(NOT USE_GIT_PROTOCOL)
+  set(git_protocol "http")
+endif()
+include(ExternalProject)
+ExternalProject_Add(cub
+  GIT_REPOSITORY https://github.com/NVlabs/cub.git
+  GIT_TAG master
+  SOURCE_DIR ${CMAKE_BINARY_DIR}/cub
+  UPDATE_COMMAND ""
+  PATCH_COMMAND ""
+  BUILD_COMMAND ""
+  CONFIGURE_COMMAND ""
+  INSTALL_COMMAND
+    ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_BINARY_DIR}/cub/cub
+    ${CMAKE_CURRENT_LIST_DIR}/../ext/include/cub
+  )
 
 #set(SOURCES test_arrays.cu)
 # cuda_compile_ptx(
@@ -54,7 +78,10 @@ endif()
 #   SOURCES ${SOURCES}
 # )
 
-cuda_add_executable(reduction-thrust reduction-thrust.cu)
+cuda_add_executable(reduction-cub reduction-cub.cu)
+target_include_directories(reduction-cub PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../ext/include)
+add_dependencies(reduction-cub cub)
+#cuda_add_executable(reduction-thrust reduction-thrust.cu) # cannot measure kernel directly, so skip
 cuda_add_executable(reduction-grid reduction-grid.cu)
 cuda_add_executable(reduction-mono reduction-mono.cu)
 cuda_add_executable(saxpy-grid saxpy-grid.cu)

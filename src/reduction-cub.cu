@@ -2,12 +2,8 @@
 #include "cuda_helper.cuh"
 #include <stdio.h>
 #include <cuda.h>
-#include <thrust/reduce.h>
-#include <thrust/sequence.h>
-#include <thrust/device_vector.h>
-#include <thrust/execution_policy.h>
-
-//#include <cub/cub.cuh>
+#include <cub/cub.cuh>
+#include <vector>
 
 template<typename T, unsigned int TRuns, unsigned int TBlocksize, unsigned int TMaxWarpNum>
 void reduce(size_t n, unsigned int dev) {
@@ -28,13 +24,23 @@ void reduce(size_t n, unsigned int dev) {
   CHECK_CUDA(cudaStreamCreate(&cstream));
 
   /* allocate memory for input data on the host */
-  thrust::host_vector<T> h_vec(n);
-  thrust::fill(h_vec.begin(), h_vec.end(), 1);
-  thrust::device_vector<T> d_vec = h_vec; // host to device copy
+  T* d_in;
+  T* d_out;
+  std::vector<T> h_vec(n);
+  std::fill(h_vec.begin(), h_vec.end(), 1);
+  CHECK_CUDA(cudaMalloc(&d_in, n*sizeof(T)));
+  CHECK_CUDA(cudaMalloc(&d_out, sizeof(T)));
+  CHECK_CUDA(cudaMemcpy(d_in, h_vec.data(), n*sizeof(T), cudaMemcpyHostToDevice));
+  // Determine temporary device storage requirements
+  void     *d_temp_storage = NULL;
+  size_t   temp_storage_bytes = 0;
+  cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, d_in, d_out, n);
+  // Allocate temporary storage
+  CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
 
   T result_gpu = 0;
 
-  dim3 blocks = ( ((n+1)/2)-1)/TBlocksize+1; // ceil(ceil(n/2.0)/TBlocksize)
+  dim3 blocks = 2; //( ((n+1)/2)-1)/TBlocksize+1; // ceil(ceil(n/2.0)/TBlocksize)
   dim3 blocks_2 = (TMaxWarpNum*numSMs-1)/TBlocksize+1;
 
   std::cout << " "
@@ -61,7 +67,7 @@ void reduce(size_t n, unsigned int dev) {
     CHECK_CUDA( cudaDeviceSynchronize() );
     CHECK_CUDA(cudaEventRecord(cstart, cstream));
 
-    result_gpu = thrust::reduce(d_vec.begin(), d_vec.end());
+    cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, d_in, d_out, n);
 
     CHECK_CUDA( cudaEventRecord(cend, cstream) );
     CHECK_CUDA( cudaEventSynchronize(cend) );
@@ -72,6 +78,7 @@ void reduce(size_t n, unsigned int dev) {
   }
 
   // check result
+  CHECK_CUDA(cudaMemcpy(&result_gpu,d_out,sizeof(T),cudaMemcpyDeviceToHost));
   if( result_gpu != static_cast<T>(n) ) {
     std::cerr << "\n\n" << result_gpu << " != " << n << "\n";
     throw std::runtime_error("RESULT MISMATCH");
@@ -83,6 +90,9 @@ void reduce(size_t n, unsigned int dev) {
   CHECK_CUDA(cudaEventDestroy(cstart));
   CHECK_CUDA(cudaEventDestroy(cend));
   CHECK_CUDA(cudaStreamDestroy(cstream));
+  CHECK_CUDA(cudaFree(d_in));
+  CHECK_CUDA(cudaFree(d_out));
+  CHECK_CUDA(cudaFree(d_temp_storage));
 
 }
 
@@ -106,11 +116,12 @@ int main(int argc, const char** argv)
   if(n2<n1)
     n2 = n1;
 
-  print_header("reduction-mono",n1,n2);
+  print_header("reduction-cub",n1,n2);
 
   try{
     for(unsigned n=n1; n<=n2; n<<=1) {
-      reduce<DATA_TYPE, REPETITIONS, 1024 /* dummy */, MAX_WARPS_PER_SM>(n, dev);
+      // cub seems to always run 256 threads per block
+      reduce<DATA_TYPE, REPETITIONS, 256 /* just for output */, MAX_WARPS_PER_SM>(n, dev);
     }
   }catch(std::runtime_error e){
     std::cerr << e.what() << "\n";
