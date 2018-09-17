@@ -47,7 +47,7 @@ for GPU in 0 1 2; do
 
     if [ $GPU -eq 0 ]; then
 #        CLOCK=1327
-        CLOCK=1132
+        CLOCK=1245
         nvidia-smi -i $GPU -ac 850,$CLOCK   # GV100
     elif [ $GPU -eq 1 ]; then
         CLOCK=1189
