@@ -31,6 +31,7 @@ void throw_error(int code,
                            +" "+std::string(func)
     );
 }
+
 inline
 void check_cuda(cudaError_t code, const char* msg, const char *func, const char *file, int line) {
   if (code != cudaSuccess) {
@@ -63,10 +64,36 @@ std::stringstream getCUDADeviceInformations(int dev) {
   return info;
 }
 
-int get_num_sm(int devId) {
-  int numSMs;
-  CHECK_CUDA(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, devId));
-  return numSMs;
+inline
+std::uint32_t get_num_cores(cudaDeviceProp devProp)
+{
+  std::uint32_t cores = 0;
+  std::uint32_t numSMs = devProp.multiProcessorCount;
+  switch (devProp.major){
+  case 2: // Fermi
+    if (devProp.minor == 1) cores = 48;
+    else cores = 32;
+    break;
+  case 3: // Kepler
+    cores = 192;
+    break;
+  case 5: // Maxwell
+    cores = 128;
+    break;
+  case 6: // Pascal
+    if (devProp.minor == 1) cores = 128;
+    else if (devProp.minor == 0) cores = 64;
+    else std::cerr << "Unknown device type\n";
+    break;
+  case 7: // Volta
+    if (devProp.minor < 5) cores = 64;
+    else std::cerr << "Unknown device type\n";
+    break;
+  default:
+    std::cerr << "Unknown device type\n";
+    break;
+  }
+  return numSMs * cores;
 }
 
 std::stringstream listCudaDevices() {
